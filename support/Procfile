@@ -1,0 +1,7 @@
+postgres: hab svc start core/builder-datastore
+api: ../target/debug/bldr-api start --path /root/builder/tmp/depot --config /root/builder/tmp/config_api.toml
+router: ../target/debug/bldr-router start
+jobsrv: ./run-server jobsrv /root/builder/tmp/config_jobsrv.toml
+sessionsrv: ./run-server sessionsrv /root/builder/tmp/config_sessionsrv.toml
+originsrv: ./run-server originsrv
+worker: ../target/debug/bldr-worker start --config /root/builder/tmp/config_worker.toml

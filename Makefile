@@ -1,7 +1,7 @@
 UNAME_S := $(shell uname -s)
 BIN = airlock
 LIB = builder-db builder-core net
-SRV = builder-api builder-admin builder-depot builder-router builder-jobsrv builder-sessionsrv builder-originsrv builder-worker
+SRV = builder-depot builder-admin builder-api builder-router builder-jobsrv builder-sessionsrv builder-originsrv builder-worker
 ALL = $(BIN) $(LIB) $(SRV)
 VERSION := $(shell cat VERSION)
 
@@ -106,6 +106,13 @@ changelog: linux
 		hab pkg binlink core/git git --force && \
 		hab pkg binlink core/github_changelog_generator github_changelog_generator --force && \
 		github_changelog_generator --future-release $(VERSION) --token $(GITHUB_TOKEN)' --max-issues=1000
+
+bldr-run: build-srv bldr-run-no-build
+.PHONY: bldr-run
+
+bldr-run-no-build:
+	support/linux/bin/forego start -f support/Procfile -e support/bldr.env
+.PHONY: bldr-run-no-build
 
 define BUILD
 build-$1: linux ## builds the $1 component
