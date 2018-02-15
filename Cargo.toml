@@ -19,3 +19,10 @@ members = [
   "components/net",
   "components/op"
 ]
+
+# TODO JB: don't commit this
+[patch."https://github.com/habitat-sh/habitat.git"]
+bitbucket-api-client = {path = "/src/habitat/components/bitbucket-api-client"}
+github-api-client = {path = "/src/habitat/components/github-api-client"}
+habitat_http_client = {path = "/src/habitat/components/http-client"}
+http-client-common = { path = "/src/habitat/components/http-client-common" }

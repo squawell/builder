@@ -44,3 +44,6 @@ git = "https://github.com/habitat-sh/habitat.git"
 
 [dependencies.habitat_core]
 git = "https://github.com/habitat-sh/core.git"
+
+[dependencies.http-client-common]
+git = "https://github.com/habitat-sh/habitat.git"

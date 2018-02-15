@@ -23,18 +23,18 @@ use sharding::InstaId;
 pub use message::sessionsrv::*;
 
 impl Routable for SessionCreate {
-    type H = u32;
+    type H = String;
 
     fn route_key(&self) -> Option<Self::H> {
-        Some(self.get_extern_id())
+        Some(self.get_extern_id().to_string())
     }
 }
 
 impl Routable for SessionGet {
-    type H = u32;
+    type H = String;
 
     fn route_key(&self) -> Option<Self::H> {
-        Some(self.get_token().get_extern_id())
+        Some(self.get_token().get_extern_id().to_string())
     }
 }
 

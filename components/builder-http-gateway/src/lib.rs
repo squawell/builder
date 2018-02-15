@@ -22,6 +22,7 @@ extern crate github_api_client;
 extern crate habitat_builder_protocol as protocol;
 extern crate habitat_core as core;
 extern crate habitat_net as hab_net;
+extern crate http_client_common;
 #[macro_use]
 extern crate hyper;
 #[macro_use]

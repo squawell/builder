@@ -51,6 +51,9 @@ git = "https://github.com/habitat-sh/habitat.git"
 [dependencies.segment-api-client]
 git = "https://github.com/habitat-sh/habitat.git"
 
+[dependencies.bitbucket-api-client]
+git = "https://github.com/habitat-sh/habitat.git"
+
 [dependencies.habitat_core]
 git = "https://github.com/habitat-sh/core.git"
 

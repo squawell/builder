@@ -40,9 +40,15 @@ impl HttpGateway for ApiSrv {
 
     fn add_middleware(config: Arc<Self::Config>, chain: &mut iron::Chain) {
         chain.link(persistent::Read::<Self::Config>::both(config.clone()));
-        chain.link(persistent::Read::<GitHubCli>::both(
-            GitHubClient::new(config.github.clone()),
-        ));
+        if config.github.is_some() {
+            chain.link(persistent::Read::<GitHubCli>::both(
+                GitHubClient::new(config.github.unwrap().clone()),
+            ));
+        } else if config.bitbucket.is_some() {
+            chain.link(persistent::Read::<BitbucketCli>::both(
+                BitbucketClient::new(config.bitbucket.unwrap().clone()),
+            ));
+        }
         chain.link(persistent::Read::<SegmentCli>::both(
             SegmentClient::new(config.segment.clone()),
         ));
@@ -163,7 +169,7 @@ impl HttpGateway for ApiSrv {
         }
 
         r.get("/status", status, "status");
-        r.get("/authenticate/:code", github_authenticate, "authenticate");
+        r.get("/authenticate/:code", authenticate, "authenticate");
         r.post("/notify", notify, "notify");
         r.patch(
             "/profile",
