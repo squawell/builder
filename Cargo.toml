@@ -19,3 +19,7 @@ members = [
   "components/net",
   "components/op"
 ]
+
+[patch."https://github.com/habitat-sh/core.git"]
+habitat_core = {path = "/src/core/components/core"}
+habitat_win_users = {path = "/src/core/components/win-users"}

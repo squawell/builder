@@ -431,7 +431,7 @@ pub fn get_optional_session_id(req: &mut Request) -> Option<u64> {
     }
 }
 
-pub fn generate_origin_encryption_keys(req: &mut Request, origin: Origin) -> NetResult<()> {
+pub fn generate_origin_encryption_keys(req: &mut Request, origin: Origin) -> NetResult<OriginPublicEncryptionKey> {
     let mut public_request = OriginPublicEncryptionKeyCreate::new();
     let mut private_request = OriginPrivateEncryptionKeyCreate::new();
     let mut public_key = OriginPublicEncryptionKey::new();
@@ -464,7 +464,7 @@ pub fn generate_origin_encryption_keys(req: &mut Request, origin: Origin) -> Net
     public_request.set_public_encryption_key(public_key);
     private_request.set_private_encryption_key(private_key);
 
-    route_message::<OriginPublicEncryptionKeyCreate, OriginPublicEncryptionKey>(
+    let key = route_message::<OriginPublicEncryptionKeyCreate, OriginPublicEncryptionKey>(
         req,
         &public_request,
     )?;
@@ -473,7 +473,7 @@ pub fn generate_origin_encryption_keys(req: &mut Request, origin: Origin) -> Net
         &private_request,
     )?;
 
-    Ok(())
+    Ok(key)
 }
 
 pub fn generate_origin_keys(req: &mut Request, session: Session, origin: Origin) -> NetResult<()> {

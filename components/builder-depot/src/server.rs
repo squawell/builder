@@ -25,13 +25,13 @@ use bodyparser;
 use github_api_client::GitHubClient;
 use hab_core::package::{ident, FromArchive, Identifiable, PackageArchive, PackageIdent,
                         PackageTarget};
-use hab_core::crypto::keys::{PairType, parse_key_str};
+use hab_core::crypto::keys::{PairType, parse_key_str, parse_name_with_rev};
 use hab_core::crypto::{BoxKeyPair, SigKeyPair};
 use hab_core::crypto::PUBLIC_BOX_KEY_VERSION;
 use hab_core::event::*;
 use http_gateway::http::controller::*;
 use http_gateway::http::helpers::{self, all_visibilities, check_origin_access, check_origin_owner,
-                                  dont_cache_response, get_param, visibility_for_optional_session};
+                                  dont_cache_response, get_param, validate_params, visibility_for_optional_session};
 use http_gateway::http::middleware::{SegmentCli, XRouteClient};
 use hab_net::{ErrCode, NetOk, NetResult};
 use hab_net::privilege::FeatureFlags;
@@ -42,6 +42,7 @@ use iron::middleware::BeforeMiddleware;
 use iron::request::Body;
 use persistent;
 use protobuf;
+use protobuf::Message;
 use protocol::originsrv::*;
 use protocol::jobsrv::{JobGraphPackagePreCreate, JobGraphPackageStats, JobGraphPackageStatsGet,
                        JobGroup, JobGroupAbort, JobGroupGet, JobGroupOriginGet,
@@ -70,6 +71,12 @@ struct OriginCreateReq {
 #[derive(Clone, Serialize, Deserialize)]
 struct OriginUpdateReq {
     default_package_visibility: String,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+struct OriginSecretPayload {
+    name: String,
+    value: String,
 }
 
 const ONE_YEAR_IN_SECS: usize = 31536000;
@@ -132,7 +139,12 @@ pub fn origin_create(req: &mut Request) -> IronResult<Response> {
     }
 
     match route_message::<OriginCreate, Origin>(req, &request) {
-        Ok(origin) => Ok(render_json(status::Created, &origin)),
+        Ok(origin) => {
+            // TED: If this fails we need to delete the origin and report an origin create failure
+            // currently there is no mechanism for deleting an origin
+            generate_origin_encryption_keys(origin.get_name(), req)?;
+            Ok(render_json(status::Created, &origin))
+        }
         Err(err) => Ok(render_net_error(&err)),
     }
 }
@@ -468,7 +480,7 @@ fn download_latest_origin_encryption_key(req: &mut Request) -> IronResult<Respon
     }
 
     let mut request = OriginPublicEncryptionKeyLatestGet::new();
-    match helpers::get_origin(req, origin) {
+    match helpers::get_origin(req, &origin) {
         Ok(mut origin) => {
             request.set_owner_id(origin.get_owner_id());
             request.set_origin(origin.take_name());
@@ -480,32 +492,34 @@ fn download_latest_origin_encryption_key(req: &mut Request) -> IronResult<Respon
         OriginPublicEncryptionKey,
     >(req, &request) {
         Ok(key) => key,
-        Err(err) => return Ok(render_net_error(&err)),
+        Err(err) => {
+            if err.get_code() == ErrCode::ENTITY_NOT_FOUND {
+                generate_origin_encryption_keys(&origin, req)?;
+                return download_latest_origin_encryption_key(req);
+            } else {
+                return Ok(render_net_error(&err));
+            }
+        },
     };
 
     let xfilename = format!("{}-{}.pub", key.get_name(), key.get_revision());
     download_content_as_file(key.get_body(), xfilename)
 }
 
-fn generate_origin_encryption_keys(req: &mut Request) -> IronResult<Response> {
-    debug!("Generate Origin Encryption Keys {:?}", req);
-    match get_param(req, "origin") {
-        Some(origin) => {
-            if !check_origin_access(req, &origin).unwrap_or(false) {
-                return Ok(Response::with(status::Forbidden));
-            }
+fn generate_origin_encryption_keys(origin: &str, req: &mut Request) -> IronResult<Response> {
+    debug!("Generate Origin Encryption Keys {:?} for {:?}", req, origin);
+    if !check_origin_access(req, origin).unwrap_or(false) {
+        return Ok(Response::with(status::Forbidden));
+    }
 
-            match helpers::get_origin(req, origin) {
-                Ok(origin) => {
-                    match helpers::generate_origin_encryption_keys(req, origin) {
-                        Ok(_) => Ok(Response::with(status::Created)),
-                        Err(err) => Ok(render_net_error(&err)),
-                    }
-                }
+    match helpers::get_origin(req, origin) {
+        Ok(origin) => {
+            match helpers::generate_origin_encryption_keys(req, origin) {
+                Ok(_) => Ok(Response::with(status::Created)),
                 Err(err) => Ok(render_net_error(&err)),
             }
         }
-        None => Ok(Response::with(status::BadRequest)),
+        Err(err) => Ok(render_net_error(&err)),
     }
 }
 
@@ -2091,6 +2105,141 @@ pub fn download_latest_builder_key(req: &mut Request) -> IronResult<Response> {
     Ok(response)
 }
 
+pub fn create_origin_secret(req: &mut Request) -> IronResult<Response> {
+     let params = match validate_params(req, &["origin"]) {
+        Ok(p) => p,
+        Err(st) => return Ok(Response::with(st)),
+    };
+
+    let origin = &params["origin"];
+
+    let body = match req.get::<bodyparser::Struct<OriginSecretPayload>>() {
+        Ok(Some(body)) => {
+            if body.name.len() <= 0 {
+                return Ok(Response::with((
+                    status::UnprocessableEntity,
+                    "Missing value for field: `name`",
+                )));
+            }
+            if body.value.len() <= 0 {
+                return Ok(Response::with((
+                    status::UnprocessableEntity,
+                    "Missing value for field: `value`",
+                )));
+            }
+            body
+        }
+        _ => return Ok(Response::with(status::UnprocessableEntity)),
+    };
+
+    if !check_origin_access(req, origin).unwrap_or(false) {
+        return Ok(Response::with(status::Forbidden));
+    }
+
+    // get metadata from secret
+    let secret_metadata = match BoxKeyPair::secret_metadata(body.value.as_bytes()) {
+        Ok(res) => res,
+        Err(e) => return Ok(Response::with((
+                    status::UnprocessableEntity,
+                    format!("Failed to get metadata from payload: {}",e),
+                ))),
+    };
+
+    debug!("Secret Metadata: {:?}", secret_metadata);
+
+    // fetch the private origin encryption key from the database
+    let mut db_priv_request = OriginPrivateEncryptionKeyGet::new();
+    match helpers::get_origin(req, origin) {
+        Ok(mut origin) => {
+            db_priv_request.set_owner_id(origin.get_owner_id());
+            db_priv_request.set_origin(origin.take_name());
+        }
+        Err(err) => return Ok(render_net_error(&err)),
+    }
+    let priv_key = match route_message::<OriginPrivateEncryptionKeyGet, OriginPrivateEncryptionKey>(req, &db_priv_request) {
+        Ok(key) => match key.write_to_bytes() {
+                Ok(bytes) => match BoxKeyPair::secret_key_from_bytes(&bytes) {
+                    Ok(key) => key,
+                    Err(e) => return Ok(Response::with((
+                        status::UnprocessableEntity,
+                        format!("{}",e),
+                        )))
+                },
+                Err(e) => return Ok(Response::with((
+                        status::UnprocessableEntity,
+                        format!("{}",e),
+                        )))
+            },
+        Err(err) => return Ok(render_net_error(&err)),
+    };
+
+    // fetch the public origin encryption key from the database
+    let mut db_pub_request = OriginPublicEncryptionKeyGet::new();
+    match helpers::get_origin(req, origin) {
+        Ok(mut origin) => {
+            db_pub_request.set_owner_id(origin.get_owner_id());
+            db_pub_request.set_origin(origin.take_name());
+        }
+        Err(err) => return Ok(render_net_error(&err)),
+    }
+    let pub_key = match route_message::<OriginPublicEncryptionKeyGet, OriginPublicEncryptionKey>(req, &db_pub_request) {
+        Ok(key) => match key.write_to_bytes() {
+                Ok(bytes) => match BoxKeyPair::public_key_from_bytes(&bytes) {
+                    Ok(key) => key,
+                    Err(e) => return Ok(Response::with((
+                        status::UnprocessableEntity,
+                        format!("{}",e),
+                        )))
+                },
+                Err(e) => return Ok(Response::with((
+                        status::UnprocessableEntity,
+                        format!("{}",e),
+                        )))
+            },
+        Err(err) => return Ok(render_net_error(&err)),
+    };
+
+    let (name, rev) = match parse_name_with_rev(secret_metadata.sender) {
+        Ok(val) => val,
+        Err(e) => return Ok(Response::with((
+                        status::UnprocessableEntity,
+                        format!("Failed to parse name and revision: {}",e),
+                        )))
+    };
+
+    debug!("Using key {:?}-{:?}", name, rev);
+
+    let box_key_pair = BoxKeyPair::new(name, rev, Some(pub_key), Some(priv_key));
+
+    debug!("Decrypting string: {:?}", &secret_metadata.ciphertext);
+
+    // verify we can decrypt the message
+    match box_key_pair.decrypt(&secret_metadata.ciphertext, None, None) {
+        Ok(_) => (),
+        Err(e) => return Ok(Response::with((
+                        status::UnprocessableEntity,
+                        format!("{}",e),
+                        )))
+    };
+
+    let mut secret = OriginSecret::new();
+    secret.set_name(body.name);
+    secret.set_value(body.value.clone());
+    match helpers::get_origin(req, &origin) {
+        Ok(origin) => secret.set_origin_id(origin.get_id()),
+        Err(err) => return Ok(render_net_error(&err)),
+    }
+    
+    let mut request = OriginSecretCreate::new();
+    request.set_secret(secret);
+
+    match route_message::<OriginSecretCreate, OriginSecret>(req, &request) {
+        Ok(_) => Ok(Response::with(status::Ok)),
+        Err(err) => Ok(render_net_error(&err)),
+    }
+
+}
+
 fn ident_from_req(req: &mut Request) -> OriginPackageIdent {
     let params = req.extensions.get::<Router>().unwrap();
     ident_from_params(&params)
@@ -2338,13 +2487,8 @@ where
         download_origin_key,
         "origin_key",
     );
-    r.post(
-        "/origins/:origin/encryption_keys",
-        XHandler::new(generate_origin_encryption_keys).before(basic.clone()),
-        "origin_encryption_key_generate",
-    );
     r.get(
-        "/origins/:origin/encryption_keys/latest",
+        "/origins/:origin/encryption_key",
         XHandler::new(download_latest_origin_encryption_key).before(basic.clone()),
         "origin_encryption_key_download",
     );
@@ -2363,6 +2507,21 @@ where
         XHandler::new(upload_origin_secret_key).before(basic.clone()),
         "origin_secret_key_create",
     );
+    r.post(
+        "/origins/:origin/secret",
+        XHandler::new(create_origin_secret).before(basic.clone()),
+        "origin_secret_create"
+    );
+    // r.get(
+    //     "/origins/:origin/secret",
+    //     XHandler::new(list_origin_secrets).before(basic.clone()),
+    //     "origin_secret_list"
+    // );
+    // r.delete(
+    //     "/origins/:origin/secret/:name",
+    //     XHandler::new(delete_origin_secret).before(basic.clone()),
+    //     "origin_secret_delete"
+    // );
     r.get(
         "/origins/:origin/secret_keys/latest",
         XHandler::new(download_latest_origin_secret_key).before(basic.clone()),
